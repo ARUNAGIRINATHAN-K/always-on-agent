@@ -1,74 +1,44 @@
-# Always On Planning Agent
+# Always-On Planning Agent
+<h3>
+  Stop building toy AI agents that crash and repeat steps.
+</h3>
 
-A local, persistent agent built with LangGraph, SQLite, APScheduler and Ollama.
-You give it a goal. It recalls what it knows about you, plans steps, pauses for
-your approval before executing, runs the approved steps, and saves
-its progress so a restart or a crash never repeats finished work.
 
-It runs entirely on your machine. No API keys, no subscriptions.
+  <a href="https://ollama.com"><img src="https://img.shields.io/badge/Ollama-100%25%20Local-black?style=for-the-badge&logo=ollama&logoColor=white" alt="100% Local" /></a>
+  <a href="https://github.com/langchain-ai/langgraph"><img src="https://img.shields.io/badge/LangGraph-State%20Machine-orange?style=for-the-badge&logo=langchain&logoColor=white" alt="LangGraph" /></a>
+  <a href="#architecture"><img src="https://img.shields.io/badge/SQLite-WAL%20Checkpoints-003B57?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite WAL" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue?style=for-the-badge" alt="Apache 2.0" /></a>
 
-| Part | File | Role |
-|---|---|---|
-| Workflow | `agent/graph.py` | LangGraph state machine: recall → plan → approval → execute → finish |
-| Tools | `agent/tools.py` | Declared, validated, idempotent actions; approval flags |
-| Memory | `agent/memory.py` | Long-term facts curated by the user; you can list, set, and forget them |
-| Storage | `agent/db.py` | SQLite schema, WAL mode, short-lived connections |
-| Service | `agent/service.py` | `run`, `resume`, and result objects |
-| Schedules | `agent/scheduling.py` | Cron jobs stored in SQLite, reloaded every minute, at most one run per day |
-| CLI | `agent/cli.py` | Operate the agent from a terminal |
-| Always-on process | `scheduler.py` | Long-running entry point; handles SIGTERM |
 
-### What is different from the simple version
 
-The original sketch recorded planned steps but never ran them. This version:
+<p>
+  <strong>Always-On Agent</strong> is a local-first, crash-resilient autonomous agent. It recalls what it knows about you, generates a plan, <strong>pauses for your approval before anything touches disk</strong>, executes approved steps with retries, and <strong>saves progress to SQLite so a restart never repeats finished work.</strong>
+</p>
 
-- **Executes real tools** (notes and tasks) through a registry with explicit parameters. Model-written arguments are checked before anything runs.
-- **Validates the plan.** Unknown tools, unknown arguments, duplicate note writes, empty content, too many steps, or non-JSON output are rejected, and the planner gets one correction round.
-- **Pauses for whole-plan approval** before any step runs. The approval node interrupts cleanly without side effects. If you reject the plan, the run aborts immediately with `status: rejected` and executes zero writes.
-- **Resumes without repeating work.** Each step is checkpointed. A resumed run continues at the next unfinished step and does not re-plan.
-- **Retries and times out** tool calls. Bad arguments are not retried.
-- **Keeps memory honest.** Long-term facts are curated directly by you via the CLI, keeping memory clean from runaway tasks.
-- **Runs schedules safely.** A daily job runs once per day, even across restarts. A cleanly failed run is retried by a later trigger that day. A run that crashed mid-way is not repeated automatically. Scheduled runs refuse approval-gated plans instead of waiting for someone who isn't there.
+<p>
+  <em>Zero cloud reliance. Zero API keys. Zero unreviewed writes.</em>
+</p>
 
-## Quick start (local)
+---
 
-Requires Python 3.11+ (tested on 3.13) and [Ollama](https://ollama.com/download).
+## Quick Start (Under 60 Seconds)
+
+### Option A: Local Python
+
+**Prerequisites:** Python 3.11+ and [Ollama](https://ollama.com/download) installed.
 
 ```bash
 ollama pull llama3.2
-
-python -m venv .venv && source .venv/bin/activate
+git clone https://github.com/your-username/always-on-agent.git && cd always-on-agent
+python -m venv .venv && source .venv/bin/activate  # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-
-cp .env.example .env          # optional: change model, timezone, limits
-python -m agent.cli memory set preferred_language Python
+cp .env.example .env
+# Give it a goal!
 python -m agent.cli run "Prepare a weekly AI research report"
 ```
+### Option B: One-Command Docker Compose
 
-If the run pauses for approval, it prints the step and the command to answer it:
-
-```bash
-python -m agent.cli resume <thread_id> approve   # or: reject
-```
-
-Other commands:
-
-```bash
-python -m agent.cli memory list
-python -m agent.cli memory forget preferred_language
-python -m agent.cli tasks
-python -m agent.cli schedule add daily-brief "0 9 * * *" "Prepare today's AI research summary"
-python -m agent.cli schedule list
-python -m agent.cli schedule remove daily-brief
-```
-
-Run the scheduler in the foreground to test it locally:
-
-```bash
-python scheduler.py
-```
-
-## Always-on (Docker)
+Start Ollama and the Always-On Agent daemon together:
 
 ```bash
 docker compose up -d
@@ -76,42 +46,89 @@ docker compose exec ollama ollama pull llama3.2
 docker compose logs -f agent
 ```
 
-- `./data` holds the SQLite database and notes. Back it up; it is the agent's whole state.
-- `restart: unless-stopped` restarts the scheduler after crashes and reboots.
-- Schedules and memory persist in `./data`. To add a schedule, use the CLI against the same volume:
-  `docker compose run --rm agent python -m agent.cli schedule add ...`
-- Changes to schedules take effect within a minute, with no restart.
+---
 
-## Safety model
+## Experience It in the Terminal
 
-- **Allowlisted tools only.** The planner can name only tools in `agent/tools.py`. There is no shell, no network, and no access outside `data/notes`.
-- **Filenames are validated**, not paths. `../x.md`, `sub/x.md` and hidden files are rejected.
-- **Whole-plan approval gate before execution.** Attended runs require human confirmation before any write runs. Rejecting immediately stops the run. Scheduled runs refuse approval-gated plans.
-- **Plan uniqueness & non-empty content.** Duplicate writes to the same note file in a single plan and blank contents are caught and rejected during validation.
-- **Idempotent tools.** Writing the same note twice gives the same file. Saving the same task title updates one row. Retries and resumes are therefore safe.
-- **Limits** on plan size, text length, tool time, and retries (see `.env.example`).
+### 1. The Agent Plans & Pauses Cleanly
+When you run a goal, the agent plans and halts safely before executing side effects:
 
-## Adding a tool
+```text
+$ python -m agent.cli run "Prepare a weekly AI research report"
 
-1. Write the function in `agent/tools.py`: `def my_tool(ctx: ToolContext, arg: str) -> str`. Make it idempotent and validate its inputs.
-2. Register it in `TOOLS` with a description and parameters. Set `requires_approval=True` if it changes anything a person would want to review.
-3. Add tests in `tests/`. The planner sees the new tool automatically.
+thread: run-6a781db6b822
+status: awaiting_approval
 
-Good candidates: fetching a web page from an allowlist of domains, reading a file from a fixed folder, or calling an internal API. Keep each one narrow, and gate anything that sends, deletes, or spends money.
+plan:
+  s1. [create_note] Write the complete research report note.
+  s2. [save_task] Add a task to review the draft.
 
-## Tests
+waiting for approval:
+  Approve plan with 2 steps?
+  approve: python -m agent.cli resume run-6a781db6b822 approve
+  reject:  python -m agent.cli resume run-6a781db6b822 reject
+```
+
+### 2. If You Reject &rarr; Instant Safe Abort
+```bash
+$ python -m agent.cli resume run-6a781db6b822 reject
+
+thread: run-6a781db6b822
+status: rejected
+
+plan was rejected; no steps were executed
+```
+
+### 3. If You Approve &rarr; Sequential Execution & Checkpointing
+```bash
+$ python -m agent.cli resume run-6a781db6b822 approve
+
+thread: run-6a781db6b822
+status: completed
+
+results:
+  s1 ok       Wrote note weekly_ai_report.md (1842 chars)
+  s2 ok       Task 'Review weekly AI report' is pending
+```
+
+---
+
+## Why This Architecture Wins
+
+| Problem | Toy Script Loop | Always-On Planning Agent |
+|---|---|---|
+| **Machine Crash / Power Loss** | Context lost; starts from 0; repeats past tool calls. | **Resumes from exact unfinished step** via SQLite checkpoints. |
+| **Unintended Side-Effects** | Model writes files without human confirmation. | **Whole-plan upfront approval**. Rejection executes 0 writes. |
+| **Memory Drift** | Model dumps temporary goals into user memory. | **User-curated facts**. Memory is read-only context to the model. |
+| **Unattended Scheduled Runs** | Hangs indefinitely on terminal prompts. | **Safe policy**. Cron jobs refuse approval-gated actions. |
+| **Transient Failures** | Fails on momentary timeout or disk lag. | **Exponential backoff & idempotent execution**. |
+
+---
+
+## Deep Technical Documentation
+
+Instead of dumping everything into one page, technical deep-dives are organized in [`docs/`](docs/):
+
+| Guide | Description |
+|---|---|
+| [**Architecture & State Machine**](docs/architecture.md) | LangGraph nodes, SQLite WAL mode, and step-by-step crash recovery mechanics. |
+| [**Tool Authoring Guide**](docs/tools.md) | How to write custom, idempotent, type-safe tools with parameter checking. |
+| [**Configuration & Model Guide**](docs/configuration.md) | Complete `.env` reference, model hardware tiers (`llama3.2`, `qwen2.5`, `llama3.1`), and timeouts. |
+| [**Security & Safety Model**](docs/safety.md) | Path traversal immunization, atomic note writes, unattended cron safety, and limitations. |
+
+---
+
+## Testing
+
+The test suite runs with mocked model fixtures—no GPU or Ollama instance required:
 
 ```bash
 pip install -r requirements-dev.txt
-python -m pytest
+pytest
 ```
 
-The tests use a scripted stand-in for the model, so they run without Ollama. They cover the approval pause and resume, retries, timeouts, unsafe filenames, memory isolation, schedule guards, and planner output that is malformed or valid.
+---
 
-## Limitations
+## License
 
-- **Plan quality depends on the model.** Smaller local models can produce weaker plans. Try `OLLAMA_MODEL` with a larger model if plans look wrong. The validation stops bad plans from running, but it cannot make a poor plan good.
-- **Timeouts do not kill threads.** Python cannot stop a running thread, so a timed-out tool may still finish in the background. This is why tools must be idempotent.
-- **One scheduler process per data directory.** SQLite handles the scheduler and CLI sharing a host. Do not run two scheduler processes against the same data directory, or they will both run jobs.
-- **Single user machine scale.** SQLite and a single process suit one person's agent. For many users or many machines, move to PostgreSQL and a dedicated job queue.
-- **The article's pattern is a starting point, not a finished product.** Expect to add your own tools and tune the planner prompt for your model.
+Distributed under the **Apache License 2.0**. See [LICENSE](LICENSE) for details.
