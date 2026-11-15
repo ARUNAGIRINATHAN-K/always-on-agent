@@ -1,0 +1,28 @@
+# Always-on setup: Ollama for the model, and the agent scheduler.
+#
+#   docker compose up -d
+#   docker compose exec ollama ollama pull llama3.2
+#
+# CLI commands run against the same data volume:
+#   docker compose run --rm agent python -m agent.cli schedule list
+services:
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+
+  agent:
+    build: .
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: llama3.2
+      AGENT_TIMEZONE: Asia/Kolkata
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+volumes:
+  ollama-models:

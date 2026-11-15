@@ -1,0 +1,7 @@
+# Versions tested together with Python 3.13.
+langgraph==1.2.22
+langgraph-checkpoint-sqlite==3.1.3
+langchain-core==1.8.0
+langchain-ollama==1.1.0
+apscheduler==3.11.3
+python-dotenv==1.2.4
