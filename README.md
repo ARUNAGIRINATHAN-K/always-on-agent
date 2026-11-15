@@ -1,15 +1,11 @@
-# Always-On Planning Agent
+# Always On Planning Agent
 <h3>
   Stop building toy AI agents that crash and repeat steps.
 </h3>
 
+<img src="docs/img/top.png" width="100%">
 
-  <a href="https://ollama.com"><img src="https://img.shields.io/badge/Ollama-100%25%20Local-black?style=for-the-badge&logo=ollama&logoColor=white" alt="100% Local" /></a>
-  <a href="https://github.com/langchain-ai/langgraph"><img src="https://img.shields.io/badge/LangGraph-State%20Machine-orange?style=for-the-badge&logo=langchain&logoColor=white" alt="LangGraph" /></a>
-  <a href="#architecture"><img src="https://img.shields.io/badge/SQLite-WAL%20Checkpoints-003B57?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite WAL" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue?style=for-the-badge" alt="Apache 2.0" /></a>
-
-
+<br>
 
 <p>
   <strong>Always-On Agent</strong> is a local-first, crash-resilient autonomous agent. It recalls what it knows about you, generates a plan, <strong>pauses for your approval before anything touches disk</strong>, executes approved steps with retries, and <strong>saves progress to SQLite so a restart never repeats finished work.</strong>
@@ -29,7 +25,7 @@
 
 ```bash
 ollama pull llama3.2
-git clone https://github.com/your-username/always-on-agent.git && cd always-on-agent
+git clone https://github.com/ARUNAGIRINATHAN-K/always-on-agent.git && cd always-on-agent
 python -m venv .venv && source .venv/bin/activate  # Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 cp .env.example .env
