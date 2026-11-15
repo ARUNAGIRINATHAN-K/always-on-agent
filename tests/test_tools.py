@@ -84,8 +84,13 @@ def test_content_limit_enforced():
         validate_args("create_note", {"filename": "a.md", "content": "x" * 20_001})
 
 
-def test_remember_preference_is_agent_sourced_and_approval_gated(ctx):
-    assert TOOLS["remember_preference"].requires_approval
-    run_tool("remember_preference", {"key": "tone", "value": "concise"}, ctx)
+def test_remember_preference_is_not_exposed_to_planner(ctx):
+    assert "remember_preference" not in TOOLS
+    with pytest.raises(ToolInputError, match="unknown tool"):
+        validate_args("remember_preference", {"key": "tone", "value": "concise"})
+
+
+def test_user_memory_remains_functional(ctx):
+    LongTermMemory(ctx.db_path).remember("u1", "preferred_language", "Python", source="user")
     (item,) = LongTermMemory(ctx.db_path).list("u1")
-    assert (item.key, item.value, item.source) == ("tone", "concise", "agent")
+    assert (item.key, item.value, item.source) == ("preferred_language", "Python", "user")

@@ -31,8 +31,18 @@ def test_accepts_common_model_output_shapes(reply):
         ('{"steps": [{"tool": "create_note", "args": {"filename": "a.md"}}]}', "missing"),
         ('{"steps": [{"tool": "shell", "args": {"cmd": "rm -rf /"}}]}', "unknown tool"),
         ('{"steps": ["create_note"]}', "not an object"),
+        ('{"steps": [{"tool": "create_note", "args": {"filename": "a.md", "content": ""}}]}', "cannot be empty"),
+        ('{"steps": [{"tool": "create_note", "args": {"filename": "a.md", "content": "   "}}]}', "cannot be empty"),
+        ('{"steps": [{"tool": "create_note", "args": {"filename": "a.md", "content": "x"}}, {"tool": "create_note", "args": {"filename": "a.md", "content": "y"}}]}', "multiple times"),
     ],
 )
 def test_rejects_bad_plans_with_a_clear_reason(reply, message):
     with pytest.raises(PlanError, match=message):
         parse_plan(reply, max_steps=5)
+
+
+def test_accepts_distinct_filenames():
+    reply = '{"steps": [{"tool": "create_note", "args": {"filename": "a.md", "content": "x"}}, {"tool": "create_note", "args": {"filename": "b.md", "content": "y"}}]}'
+    steps = parse_plan(reply, max_steps=5)
+    assert len(steps) == 2
+    assert [s["args"]["filename"] for s in steps] == ["a.md", "b.md"]

@@ -60,7 +60,9 @@ def test_scheduled_run_refuses_risky_steps_unattended(make_service, store, setti
     result = run_schedule(service, store, s)
     assert result is not None
     assert not result.awaiting_approval
-    assert result.results[0]["status"] == "skipped"
+    assert result.status == "rejected"
+    assert "refused approval-gated plan" in result.error
+    assert result.results == []
 
 
 def test_sync_jobs_adds_updates_and_removes(store, make_service, settings):

@@ -46,10 +46,11 @@ class AgentState(TypedDict, total=False):
     thread_id: str
     memories: dict[str, str]
     plan: list[dict[str, Any]]
+    plan_decision: str | None     # "approved" | "rejected"
     completed: list[str]          # step ids that have run, failed, or been skipped
     decisions: dict[str, str]     # step id -> "approved" | "rejected", for steps that need approval
     results: list[dict[str, Any]]
-    status: str                   # planned | running | completed | completed_with_skips | failed
+    status: str                   # planned | running | completed | completed_with_skips | failed | rejected
     error: str | None
 
 
@@ -83,15 +84,26 @@ def parse_plan(text: str, max_steps: int) -> list[dict[str, Any]]:
         raise PlanError(f"plan has {len(raw_steps)} steps; the limit is {max_steps}")
 
     steps: list[dict[str, Any]] = []
+    seen_notes: set[str] = set()
     for i, raw in enumerate(raw_steps, start=1):
         if not isinstance(raw, dict):
             raise PlanError(f"step {i} is not an object")
         tool = raw.get("tool")
         args = raw.get("args", {})
         try:
-            validate_args(str(tool), args)
+            clean = validate_args(str(tool), args)
         except ToolInputError as exc:
             raise PlanError(f"step {i}: {exc}") from exc
+
+        if tool == "create_note":
+            filename = str(clean.get("filename", "")).strip()
+            content = str(clean.get("content", "")).strip()
+            if not content:
+                raise PlanError(f"step {i}: note '{filename}' content cannot be empty")
+            if filename in seen_notes:
+                raise PlanError(f"step {i}: plan writes to '{filename}' multiple times; combine into one step")
+            seen_notes.add(filename)
+
         steps.append(
             {
                 "id": f"s{i}",
@@ -115,6 +127,19 @@ Known facts about the user (long-term memory):
 
 Tools you may use. Use only these tool names and argument names:
 {describe_tools()}
+
+Rules:
+1. Keep plans minimal and direct (typically 1-3 steps).
+2. Do not create placeholder notes or write to the same note twice. Combine report contents into a single complete note.
+3. Do not create artificial progress tracking (e.g. creating tasks just to mark them done).
+4. Long-term memory is read-only context about the user; do not attempt to store tasks in memory.
+
+Example good plan:
+Goal: "Prepare a weekly AI research report"
+{{"steps": [
+  {{"tool": "create_note", "args": {{"filename": "weekly_ai_report.md", "content": "# Weekly AI Research Report\\n\\nKey findings and updates...\\n"}}, "description": "Write the complete research report note."}},
+  {{"tool": "save_task", "args": {{"title": "Review weekly AI report", "status": "pending"}}, "description": "Add a task to review the draft."}}
+]}}
 
 Write a plan of at most {settings.max_steps} steps that achieves the goal with these tools.
 Respond with ONLY a JSON object in this form:
@@ -188,6 +213,7 @@ def build_graph(*, llm: Any, settings: Settings, checkpointer: Any):
             "completed": [],
             "decisions": {},
             "results": [],
+            "plan_decision": None,
             "status": "running",
             "error": None,
         }
@@ -214,21 +240,32 @@ def build_graph(*, llm: Any, settings: Settings, checkpointer: Any):
         return {"plan": [], "status": "failed", "error": f"could not build a valid plan: {last_error}"}
 
     def approval(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
-        step = _pending_step(state)
-        assert step is not None
+        plan = state.get("plan", [])
+        if not plan:
+            return {"plan_decision": "rejected", "status": "failed", "error": "no steps to approve"}
+
         if config.get("configurable", {}).get("unattended"):
-            # Scheduled runs have nobody to answer, so risky steps are refused.
-            decision = "rejected"
-        else:
-            answer = interrupt(
-                {
-                    "thread_id": state["thread_id"],
-                    "step": step,
-                    "message": "This step changes something. Approve it?",
+            # Unattended runs: if any step in the plan requires human review, refuse the whole plan.
+            risky = any(TOOLS[s["tool"]].requires_approval for s in plan)
+            if risky:
+                return {
+                    "plan_decision": "rejected",
+                    "status": "rejected",
+                    "error": "unattended run refused approval-gated plan: contains risky actions",
                 }
-            )
-            decision = _normalize_decision(answer)
-        return {"decisions": {**state.get("decisions", {}), step["id"]: decision}}
+            return {"plan_decision": "approved", "status": "running"}
+
+        answer = interrupt(
+            {
+                "thread_id": state["thread_id"],
+                "plan": plan,
+                "message": f"Approve plan with {len(plan)} steps?",
+            }
+        )
+        decision = _normalize_decision(answer)
+        if decision == "rejected":
+            return {"plan_decision": "rejected", "status": "rejected"}
+        return {"plan_decision": "approved", "status": "running"}
 
     def execute(state: AgentState) -> dict[str, Any]:
         step = _pending_step(state)
@@ -236,10 +273,6 @@ def build_graph(*, llm: Any, settings: Settings, checkpointer: Any):
         completed = [*state.get("completed", []), step["id"]]
         results = list(state.get("results", []))
         base = {"step_id": step["id"], "tool": step["tool"], "description": step["description"]}
-
-        if state.get("decisions", {}).get(step["id"]) == "rejected":
-            results.append({**base, "status": "skipped", "output": "not approved"})
-            return {"completed": completed, "results": results}
 
         ctx = ToolContext(
             notes_dir=settings.notes_dir,
@@ -264,20 +297,29 @@ def build_graph(*, llm: Any, settings: Settings, checkpointer: Any):
                 "error": f"step {step['id']} ({step['tool']}) failed: {output}"}
 
     def finish(state: AgentState) -> dict[str, Any]:
-        if state.get("status") == "failed":
+        if state.get("status") in {"failed", "rejected"}:
             return {}
+        if state.get("plan_decision") == "rejected":
+            return {"status": "rejected"}
         skipped = any(r.get("status") == "skipped" for r in state.get("results", []))
         return {"status": "completed_with_skips" if skipped else "completed"}
 
-    def route_next(state: AgentState) -> str:
+    def route_after_plan(state: AgentState) -> str:
+        if state.get("status") == "failed" or not state.get("plan"):
+            return "finish"
+        return "approval"
+
+    def route_after_approval(state: AgentState) -> str:
+        if state.get("plan_decision") != "approved":
+            return "finish"
+        return "execute"
+
+    def route_after_execute(state: AgentState) -> str:
         if state.get("status") == "failed":
             return "finish"
         step = _pending_step(state)
         if step is None:
             return "finish"
-        needs_approval = TOOLS[step["tool"]].requires_approval
-        if needs_approval and step["id"] not in state.get("decisions", {}):
-            return "approval"
         return "execute"
 
     graph = StateGraph(AgentState)
@@ -289,10 +331,9 @@ def build_graph(*, llm: Any, settings: Settings, checkpointer: Any):
 
     graph.add_edge(START, "recall")
     graph.add_edge("recall", "plan")
-    route_map = {"approval": "approval", "execute": "execute", "finish": "finish"}
-    graph.add_conditional_edges("plan", route_next, route_map)
-    graph.add_conditional_edges("approval", route_next, route_map)
-    graph.add_conditional_edges("execute", route_next, route_map)
+    graph.add_conditional_edges("plan", route_after_plan, {"approval": "approval", "finish": "finish"})
+    graph.add_conditional_edges("approval", route_after_approval, {"execute": "execute", "finish": "finish"})
+    graph.add_conditional_edges("execute", route_after_execute, {"execute": "execute", "finish": "finish"})
     graph.add_edge("finish", END)
 
     return graph.compile(checkpointer=checkpointer)

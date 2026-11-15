@@ -127,13 +127,6 @@ TOOLS: dict[str, ToolSpec] = {
         params={"title": "short task title", "status": "one of: pending, in_progress, done"},
         fn=save_task,
     ),
-    "remember_preference": ToolSpec(
-        name="remember_preference",
-        description="Store a long-term preference about the user. Needs human approval.",
-        params={"key": "short snake_case name, e.g. preferred_language", "value": "the preference"},
-        fn=remember_preference,
-        requires_approval=True,
-    ),
     "delete_note": ToolSpec(
         name="delete_note",
         description="Delete a note from the notes folder. Needs human approval.",

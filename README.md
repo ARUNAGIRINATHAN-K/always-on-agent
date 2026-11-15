@@ -2,7 +2,7 @@
 
 A local, persistent agent built with LangGraph, SQLite, APScheduler and Ollama.
 You give it a goal. It recalls what it knows about you, plans steps, pauses for
-your approval before anything that changes state, executes the rest, and saves
+your approval before executing, runs the approved steps, and saves
 its progress so a restart or a crash never repeats finished work.
 
 It runs entirely on your machine. No API keys, no subscriptions.
@@ -11,7 +11,7 @@ It runs entirely on your machine. No API keys, no subscriptions.
 |---|---|---|
 | Workflow | `agent/graph.py` | LangGraph state machine: recall → plan → approval → execute → finish |
 | Tools | `agent/tools.py` | Declared, validated, idempotent actions; approval flags |
-| Memory | `agent/memory.py` | Long-term facts with a source (`user` or `agent`); you can list and forget them |
+| Memory | `agent/memory.py` | Long-term facts curated by the user; you can list, set, and forget them |
 | Storage | `agent/db.py` | SQLite schema, WAL mode, short-lived connections |
 | Service | `agent/service.py` | `run`, `resume`, and result objects |
 | Schedules | `agent/scheduling.py` | Cron jobs stored in SQLite, reloaded every minute, at most one run per day |
@@ -23,12 +23,12 @@ It runs entirely on your machine. No API keys, no subscriptions.
 The original sketch recorded planned steps but never ran them. This version:
 
 - **Executes real tools** (notes and tasks) through a registry with explicit parameters. Model-written arguments are checked before anything runs.
-- **Validates the plan.** Unknown tools, unknown arguments, too many steps, or non-JSON output are rejected, and the planner gets one correction round.
-- **Pauses for approval** on steps that change state (`delete_note`, `remember_preference`). The approval node does nothing but interrupt, which keeps side effects out of a node LangGraph will re-run on resume.
+- **Validates the plan.** Unknown tools, unknown arguments, duplicate note writes, empty content, too many steps, or non-JSON output are rejected, and the planner gets one correction round.
+- **Pauses for whole-plan approval** before any step runs. The approval node interrupts cleanly without side effects. If you reject the plan, the run aborts immediately with `status: rejected` and executes zero writes.
 - **Resumes without repeating work.** Each step is checkpointed. A resumed run continues at the next unfinished step and does not re-plan.
 - **Retries and times out** tool calls. Bad arguments are not retried.
-- **Keeps memory honest.** Facts record whether a person typed them or the agent proposed them, and both can be inspected and deleted.
-- **Runs schedules safely.** A daily job runs once per day, even across restarts. A cleanly failed run is retried by a later trigger that day. A run that crashed mid-way is not repeated automatically. Scheduled runs refuse approval-gated steps instead of waiting for someone who isn't there.
+- **Keeps memory honest.** Long-term facts are curated directly by you via the CLI, keeping memory clean from runaway tasks.
+- **Runs schedules safely.** A daily job runs once per day, even across restarts. A cleanly failed run is retried by a later trigger that day. A run that crashed mid-way is not repeated automatically. Scheduled runs refuse approval-gated plans instead of waiting for someone who isn't there.
 
 ## Quick start (local)
 
@@ -86,7 +86,8 @@ docker compose logs -f agent
 
 - **Allowlisted tools only.** The planner can name only tools in `agent/tools.py`. There is no shell, no network, and no access outside `data/notes`.
 - **Filenames are validated**, not paths. `../x.md`, `sub/x.md` and hidden files are rejected.
-- **Approval gates** on anything that deletes data or changes memory. Scheduled runs refuse them.
+- **Whole-plan approval gate before execution.** Attended runs require human confirmation before any write runs. Rejecting immediately stops the run. Scheduled runs refuse approval-gated plans.
+- **Plan uniqueness & non-empty content.** Duplicate writes to the same note file in a single plan and blank contents are caught and rejected during validation.
 - **Idempotent tools.** Writing the same note twice gives the same file. Saving the same task title updates one row. Retries and resumes are therefore safe.
 - **Limits** on plan size, text length, tool time, and retries (see `.env.example`).
 

@@ -19,8 +19,11 @@ def test_happy_path_executes_each_step(make_service, settings):
             ("save_task", {"title": "Review report", "status": "pending"}, "Track the review"),
         )
     ])
-    result = service.run("Prepare a weekly report", "u1")
+    paused = service.run("Prepare a weekly report", "u1")
+    assert paused.awaiting_approval
+    assert paused.status == "awaiting_approval"
 
+    result = service.resume(paused.thread_id, "approved")
     assert result.status == "completed"
     assert [r["status"] for r in result.results] == ["ok", "ok"]
     assert _note(settings, "report.md").read_text() == "# Weekly"
@@ -32,7 +35,9 @@ def test_planner_gets_one_correction_round(make_service, settings):
         "Sure! Here is my plan: create a note.",           # not JSON
         plan_json(("create_note", {"filename": "a.md", "content": "x"}, "Write it")),
     ])
-    result = service.run("note please", "u1")
+    paused = service.run("note please", "u1")
+    assert paused.awaiting_approval
+    result = service.resume(paused.thread_id, "approved")
 
     assert result.status == "completed"
     assert len(llm.prompts) == 2
@@ -84,7 +89,7 @@ def test_risky_step_pauses_then_approval_runs_it(make_service, settings):
 
     assert paused.awaiting_approval
     assert paused.status == "awaiting_approval"
-    assert paused.pending_approval["step"]["tool"] == "delete_note"
+    assert paused.pending_approval["plan"][0]["tool"] == "delete_note"
     assert note.exists(), "nothing may change before approval"
 
     done = service.resume(paused.thread_id, "approved")
@@ -103,8 +108,8 @@ def test_rejected_step_is_skipped_and_nothing_changes(make_service, settings):
     paused = service.run("clean up", "u1")
     done = service.resume(paused.thread_id, "rejected")
 
-    assert done.status == "completed_with_skips"
-    assert done.results[0]["status"] == "skipped"
+    assert done.status == "rejected"
+    assert done.results == []
     assert note.read_text() == "keep me"
 
 
@@ -122,11 +127,11 @@ def test_resume_does_not_repeat_completed_steps(make_service, settings):
     ])
     paused = service.run("cleanup run", "u1")
     assert paused.awaiting_approval
-    service.resume(paused.thread_id, "approve")
+    done = service.resume(paused.thread_id, "approve")
+    assert done.status == "completed"
 
     final = service.resume(paused.thread_id, "approve")  # extra resume on a finished thread is harmless
     step_ids = [r["step_id"] for r in final.results]
-    assert step_ids.count("s1") == 1, "the completed first step must not run again"
     assert step_ids == ["s1", "s2", "s3"]
     assert len(llm.prompts) == 1, "resuming must not re-plan"
 
@@ -145,22 +150,21 @@ def test_unattended_run_refuses_risky_steps_without_waiting(make_service, settin
     result = service.run("daily job", "u1", unattended=True)
 
     assert not result.awaiting_approval
-    assert result.status == "completed_with_skips"
-    assert [r["status"] for r in result.results] == ["ok", "skipped"]
+    assert result.status == "rejected"
+    assert "refused approval-gated plan" in result.error
+    assert result.results == []
     assert note.exists()
 
 
 def test_agent_proposed_memory_needs_approval_and_is_marked_agent(make_service, settings):
     service, _ = make_service([
-        plan_json(("remember_preference", {"key": "tone", "value": "concise"}, "Remember tone"))
+        plan_json(("remember_preference", {"key": "tone", "value": "concise"}, "Remember tone")),
+        plan_json(("remember_preference", {"key": "tone", "value": "concise"}, "Remember tone")),
     ])
-    paused = service.run("learn my tone", "u1")
-    assert paused.awaiting_approval
+    result = service.run("learn my tone", "u1")
+    assert result.status == "failed"
+    assert "unknown tool" in result.error
     assert LongTermMemory(settings.db_path).recall("u1") == {}
-
-    service.resume(paused.thread_id, "approve")
-    (item,) = LongTermMemory(settings.db_path).list("u1")
-    assert (item.key, item.source) == ("tone", "agent")
 
 
 def test_saved_memory_is_passed_to_the_planner(make_service, settings):
@@ -197,7 +201,9 @@ def test_tool_failure_is_retried_then_reported(make_service, settings, monkeypat
             ("save_task", {"title": "should not run"}, "after failure"),
         )
     ])
-    result = service.run("write", "u1")
+    paused = service.run("write", "u1")
+    assert paused.awaiting_approval
+    result = service.resume(paused.thread_id, "approved")
 
     assert calls["n"] == settings.tool_retries + 1
     assert result.status == "failed"
@@ -221,7 +227,9 @@ def test_tool_timeout_is_reported(make_service, settings, monkeypatch):
     llm = ScriptedLLM([plan_json(("create_note", {"filename": "a.md", "content": "x"}, "slow"))])
     service = AgentService(settings_fast, llm=llm)
     try:
-        result = service.run("slow write", "u1")
+        paused = service.run("slow write", "u1")
+        assert paused.awaiting_approval
+        result = service.resume(paused.thread_id, "approved")
     finally:
         service.close()
     assert result.status == "failed"
@@ -239,3 +247,23 @@ def test_runs_are_checkpointed_per_thread(make_service, settings):
             "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", ("fixed-thread",)
         ).fetchone()[0]
     assert n > 0
+
+
+def test_rejecting_plan_with_multiple_steps_executes_nothing(make_service, settings):
+    service, _ = make_service([
+        plan_json(
+            ("create_note", {"filename": "report.md", "content": "draft"}, "Step 1"),
+            ("save_task", {"title": "Task 1"}, "Step 2"),
+            ("create_note", {"filename": "report_final.md", "content": "final"}, "Step 3"),
+        )
+    ])
+    paused = service.run("run goal", "u1")
+    assert paused.awaiting_approval
+    assert len(paused.plan) == 3
+
+    rejected = service.resume(paused.thread_id, "reject")
+    assert rejected.status == "rejected"
+    assert rejected.results == []
+    assert not _note(settings, "report.md").exists()
+    assert not _note(settings, "report_final.md").exists()
+    assert list_tasks(settings.db_path) == []

@@ -38,11 +38,17 @@ def _print_result(result: RunResult) -> None:
         for r in result.results:
             print(f"  {r['step_id']} {r['status']:<8} {r['output']}")
     if result.pending_approval:
-        step = result.pending_approval["step"]
         print("\nwaiting for approval:")
-        print(f"  {step['id']} [{step['tool']}] args={json.dumps(step['args'])}")
+        step = result.pending_approval.get("step")
+        if step:
+            print(f"  {step['id']} [{step['tool']}] args={json.dumps(step['args'])}")
+        else:
+            plan_len = len(result.plan)
+            print(f"  Approve plan with {plan_len} step{'s' if plan_len != 1 else ''}?")
         print(f"  approve: python -m agent.cli resume {result.thread_id} approve")
         print(f"  reject:  python -m agent.cli resume {result.thread_id} reject")
+    elif result.status == "rejected":
+        print("\nplan was rejected; no steps were executed")
 
 
 def build_parser() -> argparse.ArgumentParser:

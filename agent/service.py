@@ -88,6 +88,9 @@ class AgentService:
     def resume(self, thread_id: str, decision: str, *, unattended: bool = False) -> RunResult:
         config = {"configurable": {"thread_id": thread_id, "unattended": unattended}}
         with self._lock:
+            state = self._graph.get_state(config)
+            if not state.next:
+                return self._to_result(thread_id, state.values)
             out = self._graph.invoke(Command(resume=decision), config)
         return self._to_result(thread_id, out)
 
